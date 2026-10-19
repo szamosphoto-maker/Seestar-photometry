@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextlib
 import io
+import os
 import queue
 import sys
 import threading
@@ -57,7 +58,10 @@ class Application(tk.Tk):
         ttk.Entry(options, textvariable=self.radius, width=8).pack(side='left', padx=(8, 0))
         ttk.Label(outer, text='Csak a kijelölt könyvtár CSV-fájljait dolgozza fel. Az eredményeket az Eredmenyek almappába menti.', wraplength=720).pack(anchor='w', pady=(0, 12))
         self.start_btn = ttk.Button(outer, text='Feldolgozás indítása', command=self.start)
-        self.start_btn.pack(anchor='w', pady=(0, 14))
+        action_row = ttk.Frame(outer)
+        action_row.pack(fill='x', pady=(0, 14))
+        self.start_btn.pack(in_=action_row, side='left')
+        ttk.Button(action_row, text='Célkönyvtár megnyitása', command=self.open_results_folder).pack(side='left', padx=(10, 0))
         ttk.Label(outer, text='Feldolgozási napló').pack(anchor='w', pady=(0, 5))
         log_frame = ttk.Frame(outer)
         log_frame.pack(fill='both', expand=True)
@@ -93,6 +97,27 @@ class Application(tk.Tk):
         self.star.set(stars[0] if stars else '')
         if not stars:
             messagebox.showwarning('Csillagadatlap', 'Nem található érvényes csillagnév.txt a könyvtárban.')
+
+    def open_results_folder(self):
+        """Open the output folder beside the selected CSV files in Windows Explorer."""
+        raw_folder = self.folder.get().strip()
+        if not raw_folder:
+            messagebox.showwarning('Könyvtár', 'Előbb válaszd ki a CSV-adatok könyvtárát.')
+            return
+        folder = Path(raw_folder)
+        if not folder.is_dir():
+            messagebox.showwarning('Könyvtár', 'A kiválasztott könyvtár nem található.')
+            return
+        output = folder / 'Eredmenyek'
+        if not output.is_dir():
+            messagebox.showinfo('Nincs még eredmény',
+                                'Az Eredmenyek almappa még nem létezik. '
+                                'A feldolgozás után automatikusan létrejön.')
+            return
+        try:
+            os.startfile(str(output))
+        except OSError as exc:
+            messagebox.showerror('Megnyitási hiba', str(exc))
 
     def append(self, message):
         self.log.configure(state='normal')
