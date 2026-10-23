@@ -11,21 +11,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Python setup
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+
+      - name: Install dependencies and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Verify dependencies
+        run: |
+          python -c "import scipy; from scipy.spatial import cKDTree; import astropy; import astroquery; import matplotlib; print('SciPy:', scipy.__version__)"
+          python -m PyInstaller --version
+
       - name: Build EXE
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --windowed
           --name Seestar_Photometry
           --icon Seestar_Photometry.ico
+          --collect-all scipy
           --collect-all astropy
+          --collect-all astroquery
           --collect-all matplotlib
+          --hidden-import scipy.spatial._ckdtree
           seestar_photometry_gui.py
+
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
