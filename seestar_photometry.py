@@ -284,7 +284,7 @@ def flag_spikes(data, window_minutes=20.0, bright_threshold=0.22, sigma=3.0):
     data.loc[ix, 'spike_threshold_mag'] = thresholds
     return data
 
-def output_plots(data,t,out):
+def output_plots(data,t,out, time_only=False, show_median=True):
     cleaned = data[data.valid & ~data.spike_rejected].copy()
     # RAW means no photometric quality or spike filtering: every finite
     # magnitude is plotted, regardless of status, SNR or mag_err.
@@ -334,7 +334,7 @@ def output_plots(data,t,out):
                    s=11, c='#c8c8c8', alpha=.70, zorder=1, label='Rejected spikes')
     ax.errorbar(xplot, m, yerr=err, fmt='none', ecolor='#86b3cf', alpha=.35, lw=.5, zorder=2)
     ax.scatter(xplot, m, s=8, c='#3179a5', alpha=.62, zorder=3, label='Cleaned measurements')
-    if len(x) > 15:
+    if show_median and len(x) > 15:
         gaps = np.r_[0, np.cumsum(np.diff(x) > 5/1440)]
         any_smoothing = False
         for gid in np.unique(gaps):
@@ -349,7 +349,11 @@ def output_plots(data,t,out):
     mark_night_breaks(ax, night_ranges, offset, x, xplot)
     ax.set_ylabel('Seestar observed magnitude')
     ax.grid(alpha=.16); ax.legend(loc='best')
-    info=(f'OBSERVATION\nSite: {site}\n'
+    object_info = ''
+    if time_only and t.get('OBJECT_INFO'):
+        obj = t['OBJECT_INFO']
+        object_info = ('OBJECT\n' + '\n'.join(f'{key}: {val}' for key,val in obj.items() if val not in ('', None)) + '\n\n')
+    info=(object_info + f'OBSERVATION\nSite: {site}\n'
           f'Raw plotted (finite mag): {len(raw)} / {len(data)}\n'
           f'Cleaned measurements: {len(cleaned)}\n'
           f'Rejected spikes shown in gray: {len(rejected)}\n'
@@ -371,6 +375,8 @@ def output_plots(data,t,out):
     aside.text(0,.99,info,va='top',fontsize=font,linespacing=1.38, transform=aside.transAxes)
     fig.savefig(out/f'{t["NAME"].replace(" ","_")}_time_lightcurve.png', dpi=200, bbox_inches='tight')
     plt.close(fig)
+    if time_only:
+        return
 
     # RAW plot: no quality filtering, no spike filtering and no status coloring.
     # Only rows without a numerical magnitude/JD are impossible to display.
@@ -553,3 +559,263 @@ def main():
     print(report.split('First processing messages:')[0]);print(f'Eredmények: {out}')
 
 if __name__=='__main__':main()
+
+# ---------------------------------------------------------------------------
+# All Variables mode: time plots only, no phase/RAW plots or output tables.
+# ---------------------------------------------------------------------------
+def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
+                  min_points=100, show_median=True):
+    """Generate one time PNG for each coordinate-matched Seestar variable.
+
+    The input directory is intentionally non-recursive. VSX names are optional:
+    when offline, not found or ambiguous, a coordinate-based identifier is used.
+    """
+    import re
+    from scipy.spatial import cKDTree
+
+    if int(min_points) < 2:
+        raise ValueError('A minimális pontszám legalább 2 legyen.')
+    min_points = int(min_points)
+    folder = Path(folder)
+    files = sorted(folder.glob('*.csv'))
+    if not files:
+        raise ValueError('Nincs CSV-fájl a kiválasztott könyvtárban.')
+    output = folder / 'Eredmenyek' / 'All_Variables'
+    output.mkdir(parents=True, exist_ok=True)
+    observations, file_errors = [], []
+    required = {'RA', 'DEC', 'Is Variable', 'Mag(obs)', 'Mag(err)', 'EXP start(JD)'}
+    print(f'All Variables: {len(files)} CSV fájl, almappák nélkül.')
+    for i, file in enumerate(files, 1):
+        try:
+            table = pd.read_csv(file, usecols=lambda c: c in required or c == 'SNR', low_memory=False)
+            if not required.issubset(table.columns):
+                file_errors.append(f'{file.name}: hiányzó oszlopok')
+                continue
+            sel = table['Is Variable'].astype(str).str.strip().str.lower().isin(['true', '1', 'yes'])
+            part = table.loc[sel].copy()
+            for key in ['RA','DEC','Mag(obs)','Mag(err)','EXP start(JD)','SNR']:
+                if key in part:
+                    part[key] = pd.to_numeric(part[key], errors='coerce')
+            part = part.rename(columns={'Mag(obs)':'mag', 'Mag(err)':'mag_err', 'EXP start(JD)':'JD'})
+            part = part.dropna(subset=['RA','DEC','JD'])
+            part = part[(part.DEC.between(-90, 90)) & (part.RA.between(0,360, inclusive='left'))]
+            observations.append(part[['RA','DEC','JD','mag','mag_err'] + (['SNR'] if 'SNR' in part.columns else [])])
+        except Exception as exc:
+            file_errors.append(f'{file.name}: {exc}')
+        if i % 250 == 0:
+            print(f'Beolvasva: {i}/{len(files)} fájl')
+    if not observations or not any(len(d) for d in observations):
+        raise RuntimeError('Az Is Variable=True jelölésű csillagokhoz nem találtam méréseket.')
+    df = pd.concat(observations, ignore_index=True)
+    print(f'Változójelölésű sorok: {len(df)}, hibás fájlok: {len(file_errors)}')
+
+    ra = np.deg2rad(df.RA.to_numpy(float))
+    dec = np.deg2rad(df.DEC.to_numpy(float))
+    xyz = np.stack([np.cos(dec)*np.cos(ra), np.cos(dec)*np.sin(ra), np.sin(dec)],axis=1)
+    # The catalog has repeated measurements, so group connected points using
+    # an angular nearest-neighbour graph. Record ambiguous matches separately.
+    tree = cKDTree(xyz)
+    close = tree.query_pairs(2*np.sin(np.deg2rad(match_arcsec/3600)/2), output_type='ndarray')
+    parent = np.arange(len(df))
+    rank = np.zeros(len(df), dtype=np.uint8)
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a,b):
+        a,b=find(a),find(b)
+        if a==b:return
+        if rank[a]<rank[b]:a,b=b,a
+        parent[b]=a
+        if rank[a]==rank[b]:rank[a]+=1
+    for a,b in close:union(int(a),int(b))
+    groups = {}
+    for i in range(len(df)):
+        root=find(i)
+        groups.setdefault(root, []).append(i)
+    groups = sorted(groups.values(), key=len, reverse=True)
+    print(f'Koordináta szerint különböző jelöltek: {len(groups)}')
+
+    # The VSX api.list radius parameter is in DEGREES, not arcseconds.
+    # Grouping (match_arcsec) and catalog identification (vsx_radius_arcsec)
+    # intentionally remain independent.
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+    import json
+    from urllib.error import URLError
+
+    def parse_vsx(body, ra0, dec0):
+        payload = json.loads(body)
+        obj = payload.get('VSXObjects', payload)
+        if isinstance(obj, dict):
+            objects = obj.get('VSXObject', [])
+        elif isinstance(obj, list):
+            objects = obj
+        else:
+            objects = []
+        if isinstance(objects, dict):
+            objects = [objects]
+        matches = []
+        for item in objects:
+            if not isinstance(item, dict):
+                continue
+            try:
+                vra = float(item.get('RA2000'))
+                vdec = float(item.get('Declination2000'))
+                separation = float(sep_arcsec(vra, vdec, ra0, dec0))
+                if separation <= vsx_radius_arcsec + 0.00001:
+                    name = str(item.get('Name', '')).strip()
+                    if name:
+                        period = item.get('Period', '')
+                        vartype = item.get('Type', '')
+                        matches.append(dict(sep=separation, name=name, ra=vra,
+                                            dec=vdec, period=period, vartype=vartype))
+            except (ValueError, TypeError):
+                continue
+        return sorted(matches, key=lambda x:x['sep'])
+
+    def format_coords(ra, dec):
+        rah = (ra % 360) / 15
+        hh = int(rah); mm = int((rah-hh)*60)
+        ss = ((rah-hh)*60-mm)*60
+        d = abs(dec); dd = int(d); dm = int((d-dd)*60)
+        ds = ((d-dd)*60-dm)*60
+        return f'{hh:02d}:{mm:02d}:{ss:05.2f}', f'{"+" if dec >= 0 else "-"}{dd:02d}:{dm:02d}:{ds:04.1f}'
+
+    def vsx_lookup(ra0, dec0):
+        params = urlencode({'view': 'api.list', 'ra': f'{ra0:.8f}',
+                            'dec': f'{dec0:.8f}',
+                            'radius': f'{vsx_radius_arcsec / 3600:.9f}',
+                            'format': 'json'})
+        url = 'https://www.aavso.org/vsx/index.php?' + params
+        req = Request(url, headers={'User-Agent': 'SeestarPhotometry/1.1 (VSX coordinate query)',
+                                    'Accept': 'application/json'})
+        with urlopen(req, timeout=15) as response:
+            body = response.read().decode('utf-8-sig')
+        return parse_vsx(body, ra0, dec0)
+
+    print(f'VSX koordináta-keresés: {vsx_radius_arcsec:g}″; csillagcsoportosítás: {match_arcsec:g}″')
+    vsx_available = True
+    vsx_matched = vsx_missing = vsx_ambiguous = 0
+
+    import matplotlib.pyplot as plt
+    made = 0
+    used_names = set()
+    summary = []
+    skipped = 0
+    for n, ix in enumerate(groups, 1):
+        d = df.iloc[ix].copy().sort_values('JD')
+        rvec = np.mean(xyz[ix], axis=0)
+        rvec /= np.linalg.norm(rvec)
+        cra = np.rad2deg(np.arctan2(rvec[1],rvec[0])) % 360
+        cdec = np.rad2deg(np.arcsin(rvec[2]))
+        fallback = f'VAR_RA{cra:09.5f}_DEC{cdec:+09.5f}'
+        # Filter on unique, valid photometric samples BEFORE VSX network calls.
+        finite = np.isfinite(d.mag.to_numpy(float)) & np.isfinite(d.JD.to_numpy(float))
+        d = d.loc[finite].copy()
+        if d.empty:
+            skipped += 1
+            continue
+        d['_time_key'] = np.rint(d.JD.to_numpy(float)*86400*2).astype('int64')
+        d['_err_sort'] = d.mag_err.where(d.mag_err.gt(0), np.inf).fillna(np.inf)
+        d = (d.sort_values(['_time_key','_err_sort']).drop_duplicates('_time_key')
+               .drop(columns=['_time_key','_err_sort']).sort_values('JD'))
+        err_pre = pd.to_numeric(d.mag_err, errors='coerce').to_numpy(float)
+        snr_pre = pd.to_numeric(d.SNR, errors='coerce').to_numpy(float) if 'SNR' in d else np.full(len(d), np.nan)
+        pre_valid = np.isfinite(err_pre) & (err_pre>0) & (err_pre<=0.2) & np.isfinite(snr_pre) & (snr_pre>=10)
+        if int(pre_valid.sum()) < min_points:
+            skipped += 1
+            continue
+        name = fallback
+        vsx_obj = None
+        vsx_status = 'not_found'
+        if vsx_available:
+            try:
+                matches = vsx_lookup(cra, cdec)
+                if len(matches) == 1:
+                    vsx_obj = matches[0]
+                    name = vsx_obj['name']
+                    vsx_status = 'matched'
+                    vsx_matched += 1
+                    print(f"VSX: {fallback} -> {name} ({vsx_obj['sep']:.2f}″)")
+                elif len(matches) > 1:
+                    vsx_ambiguous += 1
+                    vsx_status = 'ambiguous'
+                    print(f'VSX több találat ({fallback}): ' + ', '.join(x['name'] for x in matches[:6]) + '; koordinátanév marad.')
+                else:
+                    vsx_missing += 1
+                    print(f'VSX nincs találat: {fallback}')
+            except Exception as exc:
+                print(f'VSX lekérdezés sikertelen ({fallback}): {type(exc).__name__}: {str(exc)[:160]}')
+                print('A következő csillagok koordinátanévvel készülnek. Ellenőrizd az internetkapcsolatot és a VSX API-t.')
+                vsx_available = False
+                vsx_status = 'query_failed'
+        err = pd.to_numeric(d.mag_err, errors='coerce').to_numpy(float)
+        snr = pd.to_numeric(d.SNR, errors='coerce').to_numpy(float) if 'SNR' in d else np.full(len(d), np.nan)
+        valid = np.isfinite(err) & (err>0) & (err<=0.2) & np.isfinite(snr) & (snr>=10)
+        # Reuse exactly the target star's time plotting engine, without RAW/phase plots.
+        clean_name = re.sub(r'[^a-zA-Z0-9_+.-]+', '_', name).strip('._')[:100] or fallback
+        if clean_name in used_names:
+            clean_name += f'_{n}'
+        used_names.add(clean_name)
+        d = d.reset_index(drop=True)
+        d['SNR'] = snr
+        d['status'] = np.select(
+            [~np.isfinite(d.mag.to_numpy(float)),
+             ~np.isfinite(err) | (err <= 0),
+             err > 0.2,
+             ~np.isfinite(snr) | (snr < 10)],
+            ['missing_mag', 'missing_or_invalid_error', 'high_error', 'low_snr'],
+            default='OK')
+        d['valid'] = d['status'].eq('OK')
+        d = flag_spikes(d)
+        good = d[d['valid'] & ~d['spike_rejected']]
+        if len(good) < min_points:
+            skipped += 1
+            print(f'{name}: {len(good)} tisztított pont < {min_points}, kihagyva.')
+            continue
+        coord_ra, coord_dec = (vsx_obj['ra'], vsx_obj['dec']) if vsx_obj else (cra, cdec)
+        ra_text, dec_text = format_coords(coord_ra, coord_dec)
+        period = vsx_obj.get('period') if vsx_obj else None
+        try:
+            period_num = float(str(period).replace(',', '.'))
+            period_text = f'{period_num:.9g} d ({period_num * 24:.4f} h)' if np.isfinite(period_num) and period_num > 0 else '--'
+        except (TypeError, ValueError):
+            period_text = '--'
+        vartype = vsx_obj.get('vartype') if vsx_obj else None
+        object_info = {'Name': name, 'RA (J2000)': ra_text, 'Dec (J2000)': dec_text,
+                       'Period': period_text, 'Type': vartype or '--'}
+        output_plots(d, {'NAME': clean_name, 'SITE': 'Esztergom, HU',
+                         'OBJECT_INFO': object_info}, output, time_only=True,
+                     show_median=show_median)
+        made += 1
+        first = pd.to_datetime(good.JD.min(), unit='D', origin='julian', utc=True)
+        last = pd.to_datetime(good.JD.max(), unit='D', origin='julian', utc=True)
+        summary.append({'ID': name, 'VSX_status': vsx_status,
+                        'RA_deg': round(coord_ra, 7), 'DEC_deg': round(coord_dec, 7),
+                        'RA_J2000': ra_text, 'DEC_J2000': dec_text,
+                        'Period_d': period if period_text != '--' else '',
+                        'Type': vartype or '', 'Points_raw': len(d),
+                        'Points_cleaned': len(good), 'Rejected_spikes': int(d.spike_rejected.sum()),
+                        'JD_start': float(good.JD.min()), 'JD_end': float(good.JD.max()),
+                        'UTC_start': first.strftime('%Y-%m-%d %H:%M:%S'),
+                        'UTC_end': last.strftime('%Y-%m-%d %H:%M:%S'),
+                        'Span_hours': round((good.JD.max()-good.JD.min())*24, 4),
+                        'Median_mag': round(float(good.mag.median()), 4),
+                        'Median_error_mag': round(float(good.mag_err.median()), 4),
+                        'Median_SNR': round(float(good.SNR.median()), 2),
+                        'Plot_file': f'{clean_name}_time_lightcurve.png'})
+        print(f'{n}/{len(groups)}  {name}: {len(d)} pont')
+    columns = ['ID','VSX_status','RA_deg','DEC_deg','RA_J2000','DEC_J2000',
+               'Period_d','Type','Points_raw','Points_cleaned','Rejected_spikes',
+               'JD_start','JD_end','UTC_start','UTC_end','Span_hours',
+               'Median_mag','Median_error_mag','Median_SNR','Plot_file']
+    summary_path = output / 'All_Variables_summary.csv'
+    pd.DataFrame(summary, columns=columns).to_csv(summary_path, index=False, encoding='utf-8-sig')
+    print(f'Összesítés: {summary_path}; minimum: {min_points} pont; kihagyva: {skipped}')
+    print(f'VSX: azonosított={vsx_matched}, nincs találat={vsx_missing}, több találat={vsx_ambiguous}.')
+    print(f'Elkészült time-görbék: {made}. Mappa: {output}')
+    if file_errors:
+        print('Első beolvasási hibák:', *file_errors[:10], sep='\n  ')
+    return made

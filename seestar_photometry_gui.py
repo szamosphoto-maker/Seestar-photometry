@@ -29,12 +29,16 @@ class Application(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Seestar Photometry')
-        self.geometry('780x580')
+        self.geometry('850x680')
         self.minsize(680, 480)
         self.messages = queue.Queue()
         self.folder = tk.StringVar()
         self.star = tk.StringVar()
         self.radius = tk.StringVar(value='8.0')
+        self.vsx_radius = tk.StringVar(value='5.0')
+        self.min_points = tk.StringVar(value='100')
+        self.show_median = tk.BooleanVar(value=True)
+        self.mode = tk.StringVar(value='target')
         self.running = False
         self.build_ui()
         self.after(100, self.drain_messages)
@@ -49,14 +53,27 @@ class Application(tk.Tk):
         ttk.Entry(folder_row, textvariable=self.folder).pack(side='left', fill='x', expand=True)
         ttk.Button(folder_row, text='Tallózás...', command=self.pick_folder).pack(side='left', padx=(8, 0))
         ttk.Button(folder_row, text='Frissítés', command=self.refresh_stars).pack(side='left', padx=(8, 0))
-        options = ttk.Frame(outer)
-        options.pack(fill='x', pady=(0, 12))
-        ttk.Label(options, text='Célcsillag:').pack(side='left')
-        self.star_select = ttk.Combobox(options, textvariable=self.star, state='readonly', width=32)
+        mode_row = ttk.LabelFrame(outer, text='Feldolgozás módja', padding=10)
+        mode_row.pack(fill='x', pady=(0, 12))
+        ttk.Radiobutton(mode_row, text='Célcsillag – TXT-kártya, time / raw / phase',
+                        value='target', variable=self.mode, command=self.change_mode).pack(anchor='w')
+        ttk.Radiobutton(mode_row, text='All Variables – összes jelölt változó, csak time-görbe + VSX',
+                        value='all', variable=self.mode, command=self.change_mode).pack(anchor='w')
+        self.target_options = ttk.Frame(outer)
+        self.target_options.pack(fill='x', pady=(0, 12))
+        ttk.Label(self.target_options, text='Célcsillag:').pack(side='left')
+        self.star_select = ttk.Combobox(self.target_options, textvariable=self.star, state='readonly', width=32)
         self.star_select.pack(side='left', padx=(8, 20))
-        ttk.Label(options, text='Keresési sugár (″):').pack(side='left')
-        ttk.Entry(options, textvariable=self.radius, width=8).pack(side='left', padx=(8, 0))
-        ttk.Label(outer, text='Csak a kijelölt könyvtár CSV-fájljait dolgozza fel. Az eredményeket az Eredmenyek almappába menti.', wraplength=720).pack(anchor='w', pady=(0, 12))
+        ttk.Label(self.target_options, text='Keresési sugár (″):').pack(side='left')
+        ttk.Entry(self.target_options, textvariable=self.radius, width=8).pack(side='left', padx=(8, 0))
+        self.vsx_options = ttk.Frame(outer)
+        ttk.Label(self.vsx_options, text='VSX keresési sugár (″):').pack(side='left')
+        ttk.Entry(self.vsx_options, textvariable=self.vsx_radius, width=8).pack(side='left', padx=(8, 16))
+        ttk.Label(self.vsx_options, text='Min. tisztított pont:').pack(side='left')
+        ttk.Entry(self.vsx_options, textvariable=self.min_points, width=7).pack(side='left', padx=(8, 16))
+        ttk.Checkbutton(self.vsx_options, text='Futó medián', variable=self.show_median).pack(side='left')
+        self.note = ttk.Label(outer, text='Csak a kijelölt könyvtár CSV-fájljait dolgozza fel. Célcsillag: Eredmenyek, All Variables: Eredmenyek/All_Variables.', wraplength=720)
+        self.note.pack(anchor='w', pady=(0, 12))
         action_row = ttk.Frame(outer)
         action_row.pack(fill='x', pady=(0, 14))
         self.start_btn = ttk.Button(action_row, text='Feldolgozás indítása', command=self.start)
@@ -70,6 +87,18 @@ class Application(tk.Tk):
         scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
         scroll.pack(side='right', fill='y')
         self.log.configure(yscrollcommand=scroll.set)
+
+        ttk.Separator(outer, orient='horizontal').pack(fill='x', pady=(12, 6))
+        ttk.Label(outer, text='Zsolt Szamosvári  |  zsolt.szamosv@gmail.com',
+                  anchor='center', foreground='#666666').pack(fill='x', side='bottom')
+
+    def change_mode(self):
+        if self.mode.get() == 'all':
+            self.target_options.pack_forget()
+            self.vsx_options.pack(fill='x', pady=(0, 12), before=self.note)
+        else:
+            self.vsx_options.pack_forget()
+            self.target_options.pack(fill='x', pady=(0, 12), before=self.note)
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title='Válaszd ki a Seestar CSV könyvtárát')
@@ -95,7 +124,7 @@ class Application(tk.Tk):
         stars.sort(key=str.casefold)
         self.star_select['values'] = stars
         self.star.set(stars[0] if stars else '')
-        if not stars:
+        if not stars and self.mode.get() == 'target':
             messagebox.showwarning('Csillagadatlap', 'Nem található érvényes csillagnév.txt a könyvtárban.')
 
     def open_results_folder(self):
@@ -131,29 +160,53 @@ class Application(tk.Tk):
             messagebox.showerror('Hiba', 'A kiválasztott könyvtár nem létezik.')
             return
         star = self.star.get().strip()
-        if not star:
+        if self.mode.get() == 'target' and not star:
             messagebox.showerror('Hiba', 'Válassz célcsillagot, szükség esetén a Frissítés gombbal.')
             return
-        try:
-            radius = float(self.radius.get().strip().replace(',', '.'))
-            if not 0 < radius <= 3600:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror('Hiba', 'A keresési sugár pozitív szám legyen.')
-            return
+        vsx_radius = 5.0
+        if self.mode.get() == 'all':
+            try:
+                vsx_radius = float(self.vsx_radius.get().strip().replace(',', '.'))
+                if not 0 < vsx_radius <= 60:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror('Hiba', 'A VSX keresési sugár 0 és 60 ívmásodperc között legyen.')
+                return
+        min_points = 100
+        if self.mode.get() == 'all':
+            try:
+                min_points = int(self.min_points.get().strip())
+                if min_points < 2: raise ValueError
+            except ValueError:
+                messagebox.showerror('Hiba', 'A minimum pontszám legalább 2 egész szám legyen.')
+                return
+        radius = 8.0
+        if self.mode.get() == 'target':
+            try:
+                radius = float(self.radius.get().strip().replace(',', '.'))
+                if not 0 < radius <= 3600:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror('Hiba', 'A keresési sugár pozitív szám legyen.')
+                return
         self.running = True
         self.start_btn.configure(state='disabled')
-        self.append(f'\n=== {star} | {folder} ===\n')
-        threading.Thread(target=self.process, args=(folder, star, radius), daemon=True).start()
+        mode = self.mode.get()
+        self.append(f'\n=== {mode} | {star} | {folder} ===\n')
+        threading.Thread(target=self.process, args=(folder, star, radius, mode, vsx_radius, min_points, self.show_median.get()), daemon=True).start()
 
-    def process(self, folder, star, radius):
+    def process(self, folder, star, radius, mode, vsx_radius, min_points, show_median):
         # The existing main() is preserved; only the command-line arguments are supplied by the GUI.
         previous = sys.argv
         writer = QueueWriter(self.messages)
         try:
-            sys.argv = ['seestar_photometry.py', '--folder', str(folder), '--star', star, '--max-sep', str(radius)]
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-                engine.main()
+                if mode == 'all':
+                    engine.all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=vsx_radius,
+                                         min_points=min_points, show_median=show_median)
+                else:
+                    sys.argv = ['seestar_photometry.py', '--folder', str(folder), '--star', star, '--max-sep', str(radius)]
+                    engine.main()
             self.messages.put(('done', True))
         except BaseException:
             self.messages.put(('log', '\nHIBA:\n' + traceback.format_exc() + '\n'))
