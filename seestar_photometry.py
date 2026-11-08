@@ -15,6 +15,7 @@ import argparse
 import configparser
 import io
 import zipfile
+import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -30,11 +31,11 @@ def sep_arcsec(ra, dec, ra0, dec0):
 def read_targets(path):
     cp=configparser.ConfigParser(interpolation=None)
     if not cp.read(path,encoding='utf-8-sig'):
-        raise FileNotFoundError(f'Nem található a katalógus: {path}')
+        raise FileNotFoundError(f'Card file not found: {path}')
     return cp
 
 def get_target(cp,name):
-    if name not in cp: raise ValueError(f'Ismeretlen cél: {name}. Választható: {", ".join(cp.sections())}')
+    if name not in cp: raise ValueError(f'Unknown target: {name}. Available: {", ".join(cp.sections())}')
     s=cp[name]
     target = {k:float(s[k]) for k in ('RA','DEC','COORD_EPOCH','PMRA','PMDEC','T0','PERIOD')}
     target.update({'T0_TYPE':s.get('T0_TYPE','HJD').upper(), 'NAME':name,
@@ -43,16 +44,16 @@ def get_target(cp,name):
     keys = ('LATITUDE','LONGITUDE','ELEVATION')
     provided = [bool(s.get(k,'').strip()) for k in keys]
     if any(provided) and not all(provided):
-        raise ValueError('Az észlelőhelyhez LATITUDE, LONGITUDE és ELEVATION is szükséges.')
+        raise ValueError('Location needs LATITUDE, LONGITUDE and ELEVATION.')
     if all(provided):
         for k in keys:
             target[k] = float(s[k])
             if not np.isfinite(target[k]):
-                raise ValueError(f'Érvénytelen észlelőhely-adat: {k}')
+                raise ValueError(f'Invalid location field: {k}')
         if not -90 <= target['LATITUDE'] <= 90:
-            raise ValueError('LATITUDE értéke -90 és +90 fok közötti legyen.')
+            raise ValueError('LATITUDE must be between -90 and +90 degrees.')
         if not -180 <= target['LONGITUDE'] <= 180:
-            raise ValueError('LONGITUDE értéke -180 és +180 fok közötti legyen.')
+            raise ValueError('LONGITUDE must be between -180 and +180 degrees.')
         target['LOCATION_MODE'] = 'observatory'
     else:
         target['LOCATION_MODE'] = 'geocenter'
@@ -77,12 +78,12 @@ def collect(files, t, threshold=8.0):
         try:
             df = pd.read_csv(io.BytesIO(raw), low_memory=False)
             if not REQ.issubset(df.columns):
-                errors.append(f'{filename}: hiányzó kötelező oszlop')
+                errors.append(f'{filename}: missing required column')
                 continue
             jds = pd.to_numeric(df['EXP start(JD)'], errors='coerce').to_numpy(float)
             finite_jd = np.isfinite(jds)
             if not finite_jd.any():
-                errors.append(f'{filename}: nincs érvényes JD')
+                errors.append(f'{filename}: no valid JD')
                 continue
             # 1 second tolerance avoids numerical JD rounding causing false detection.
             is_multi = (np.nanmax(jds) - np.nanmin(jds)) * 86400 > 1.0
@@ -100,7 +101,7 @@ def collect(files, t, threshold=8.0):
             candidates = np.where(finite_jd & np.isfinite(dist) & (dist <= threshold))[0]
             if not len(candidates):
                 unmatched += 1
-                errors.append(f'{filename}: nincs közeli forrás')
+                errors.append(f'{filename}: no nearby source')
                 continue
             if not is_multi:
                 # Single-exposure files contain many stars: use closest one.
@@ -132,7 +133,7 @@ def collect(files, t, threshold=8.0):
         except Exception as e:
             errors.append(f'{filename}: {type(e).__name__}: {e}')
     if not rows:
-        raise RuntimeError('A célcsillag nem található. Ellenőrizd a változó koordinátáit.')
+        raise RuntimeError('Target star not found. Check the variable coordinates.')
     data = pd.DataFrame(rows).sort_values('JD').reset_index(drop=True)
     # Remove overlapping exports of the very same exposure. Round only for
     # duplicate grouping; preserve original JDs in all returned measurements.
@@ -146,13 +147,13 @@ def collect(files, t, threshold=8.0):
                 .drop(columns=['_jd_key', '_quality_rank', '_err_rank'])
                 .sort_values('JD').reset_index(drop=True))
     duplicates = len(rows) - len(data)
-    print(f'Összefűzött CSV-k: {multi_files}; ezekből koordinátával egyező sorok: {multi_rows}')
-    print(f'Ismétlődő időpont miatt kihagyva: {duplicates}; egyedi mérések: {len(data)}')
+    print(f'Combined CSV files: {multi_files}; coordinate-matched rows: {multi_rows}')
+    print(f'Duplicate time records removed: {duplicates}; unique measurements: {len(data)}')
     return data, seen, unmatched, errors
 
 def add_phase(data,t):
     if t['T0_TYPE']!='HJD':
-        raise ValueError(f'Az egyelőre támogatott T0_TYPE: HJD; kapott: {t["T0_TYPE"]}')
+        raise ValueError(f'Currently supported T0_TYPE: HJD; received: {t["T0_TYPE"]}')
     from astropy.time import Time
     from astropy.coordinates import SkyCoord, EarthLocation
     import astropy.units as u
@@ -293,7 +294,7 @@ def output_plots(data,t,out, time_only=False, show_median=True):
                np.isfinite(pd.to_numeric(data['mag'], errors='coerce'))].copy()
     rejected = data[data.valid & data.spike_rejected].copy()
     if cleaned.empty:
-        print('Nincs elfogadott magnitúdómérés; csak a táblázat és a napló készül.')
+        print('No accepted magnitude measurements; only tables and report generated.')
         return
 
     x = cleaned.JD.to_numpy(float)
@@ -435,13 +436,13 @@ def choose_target(valid_configs):
         import tkinter as tk
         from tkinter import ttk
         root = tk.Tk()
-        root.title('Seestar Photometry – csillagválasztás')
+        root.title('Seestar Photometry – select target')
         root.geometry('430x340')
         root.minsize(350, 240)
         root.attributes('-topmost', True)
         frame = ttk.Frame(root, padding=14)
         frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text='Válaszd ki a feldolgozandó változót:').pack(anchor='w', pady=(0, 9))
+        ttk.Label(frame, text='Select the variable to process:').pack(anchor='w', pady=(0, 9))
         row = ttk.Frame(frame)
         row.pack(fill='both', expand=True)
         scrollbar = ttk.Scrollbar(row, orient='vertical')
@@ -463,19 +464,19 @@ def choose_target(valid_configs):
             root.destroy()
         buttons = ttk.Frame(frame)
         buttons.pack(fill='x', pady=(12, 0))
-        ttk.Button(buttons, text='Feldolgozás', command=confirm).pack(side='right')
-        ttk.Button(buttons, text='Mégse', command=cancel).pack(side='right', padx=(0, 8))
+        ttk.Button(buttons, text='Process', command=confirm).pack(side='right')
+        ttk.Button(buttons, text='Cancel', command=cancel).pack(side='right', padx=(0, 8))
         stars.bind('<Double-Button-1>', confirm)
         root.bind('<Return>', confirm)
         root.bind('<Escape>', cancel)
         root.mainloop()
         return selection[0]
     except Exception as exc:
-        print(f'Grafikus csillagválasztó nem elérhető: {exc}')
+        print(f'Graphical target selection unavailable: {exc}')
         for i, (_, cp) in enumerate(valid_configs, 1):
             print(f'{i}. {cp.sections()[0]}')
         try:
-            answer = input('Add meg a csillag sorszámát (Enter = kilépés): ').strip()
+            answer = input('Enter target number (Enter to exit): ').strip()
             if not answer:
                 return None
             index = int(answer) - 1
@@ -488,17 +489,18 @@ def main():
     p=argparse.ArgumentParser(description='Seestar CSV light curves')
     p.add_argument('--folder',type=Path)
     p.add_argument('--out',type=Path)
-    p.add_argument('--star',type=str,help='Csillagnév kiválasztása ablak nélkül (pl. --star "VW Cep")')
+    p.add_argument('--star',type=str,help='Select target without dialog (pl. --star "VW Cep")')
     p.add_argument('--max-sep',type=float,default=8.0,help='Matching radius, arcseconds')
+    p.add_argument('--site-settings',type=Path,help='Saved observatory settings JSON')
     args=p.parse_args()
     if not args.folder:
         from tkinter import Tk, filedialog
         root=Tk();root.withdraw();root.attributes('-topmost',True)
-        chosen=filedialog.askdirectory(title='Válaszd ki a Seestar CSV könyvtárát')
+        chosen=filedialog.askdirectory(title='Choose Seestar CSV folder')
         root.destroy()
-        if not chosen:print('Nem választottál könyvtárat.');return
+        if not chosen:print('No folder selected.');return
         args.folder=Path(chosen)
-    if not args.folder.is_dir():p.error(f'A könyvtár nem létezik: {args.folder}')
+    if not args.folder.is_dir():p.error(f'Folder does not exist: {args.folder}')
     config_files=[f for f in args.folder.glob('*.txt') if f.name.lower() not in ('readme.txt',)]
     valid_configs=[]
     for f in config_files:
@@ -510,24 +512,29 @@ def main():
             continue
     valid_configs.sort(key=lambda item: item[1].sections()[0].casefold())
     if not valid_configs:
-        raise SystemExit('Nem található érvényes csillagnév.txt a kijelölt mappában. A fájl neve és [fejléce] egyezzen.')
+        raise SystemExit('No valid variable-name.txt card in selected folder. File name and [section] must match.')
     if args.star:
         matching = [item for item in valid_configs if item[1].sections()[0].casefold() == args.star.strip().casefold()]
         if not matching:
-            raise SystemExit('Nincs ilyen csillag: '+args.star+'. Választható: '+', '.join(cp.sections()[0] for _, cp in valid_configs))
+            raise SystemExit('No such star: '+args.star+'. Available: '+', '.join(cp.sections()[0] for _, cp in valid_configs))
         selected = matching[0]
     else:
         selected = choose_target(valid_configs)
     if selected is None:
-        print('Nem választottál csillagot.')
+        print('No star selected.')
         return
     cfg,cp=selected
     t=get_target(cp,cp.sections()[0])
-    print(f'Célcsillag: {t["NAME"]}; adatlap: {cfg.name}')
-    # names=sorted(f for f in args.folder.rglob('*.csv') if 'eredmenyek' not in [x.lower() for x in f.parts])
+    if args.site_settings:
+        site=json.loads(args.site_settings.read_text(encoding='utf-8'))
+        t.update(SITE=site['name'], LATITUDE=float(site['latitude']),
+                 LONGITUDE=float(site['longitude']), ELEVATION=float(site['elevation']),
+                 LOCATION_MODE='observatory')
+    print(f'Target: {t["NAME"]}; card: {cfg.name}')
+    # names=sorted(f for f in args.folder.rglob('*.csv') if 'results' not in [x.lower() for x in f.parts])
     names=sorted(args.folder.glob('*.csv'))
     data,n,unmatched,errors=collect(((str(f),f.read_bytes()) for f in names),t,args.max_sep)
-    out=args.out or args.folder/'Eredmenyek'
+    out=args.out or args.folder/'Results'
     out.mkdir(parents=True,exist_ok=True)
     phase_message=''
     location_description=(f"{t['SITE'] or 'Unnamed site'}; lat={t['LATITUDE']:.6f} deg, "
@@ -536,14 +543,14 @@ def main():
     print(f'Heliocentric correction location: {location_description}')
     try:data=add_phase(data,t)
     except ImportError:
-        phase_message='Fázisgörbe nem készül: telepítsd az astropy csomagot (python -m pip install astropy).'
-    except Exception as e:phase_message=f'Fázisgörbe nem készült: {e}'
+        phase_message='Phase plot skipped: install astropy (python -m pip install astropy).'
+    except Exception as e:phase_message=f'Phase plot not generated: {e}'
     base=t['NAME'].replace(' ','_')
     data=flag_spikes(data)
     data.to_csv(out/f'{base}_all_measurements.csv',index=False,float_format='%.9f')
     data[data.valid & ~data.spike_rejected].to_csv(out/f'{base}_cleaned.csv',index=False,float_format='%.9f')
     data[data.spike_rejected].to_csv(out/f'{base}_rejected_spikes.csv',index=False,float_format='%.9f')
-    print(f'Automatikusan kiszűrt kiugró pontok: {int(data.spike_rejected.sum())}; tisztított mérések: {int((data.valid & ~data.spike_rejected).sum())}')
+    print(f'Automatically excluded spikes: {int(data.spike_rejected.sum())}; cleaned measurements: {int((data.valid & ~data.spike_rejected).sum())}')
     output_plots(data,t,out)
     counts=data.status.value_counts().to_string()
     report=(f'Object: {t["NAME"]}\nCSV files: {n}\nMatched files: {len(data)}\nUnmatched files: {unmatched}\n'
@@ -556,15 +563,15 @@ def main():
             'CAVEAT: Gaia/CSV coordinate epoch may differ. HJD correction assumes CSV JD=UTC; VSX HJD time scale should be verified.\n'
             '\nFirst processing messages:\n'+'\n'.join(errors[:100]))
     (out/f'{base}_quality_report.txt').write_text(report,encoding='utf-8')
-    print(report.split('First processing messages:')[0]);print(f'Eredmények: {out}')
+    print(report.split('First processing messages:')[0]);print(f'Results: {out}')
 
 if __name__=='__main__':main()
 
 # ---------------------------------------------------------------------------
 # All Variables mode: time plots only, no phase/RAW plots or output tables.
 # ---------------------------------------------------------------------------
-def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
-                  min_points=100, show_median=True):
+def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=8.0,
+                  min_points=100, show_median=True, site_name='Not specified'):
     """Generate one time PNG for each coordinate-matched Seestar variable.
 
     The input directory is intentionally non-recursive. VSX names are optional:
@@ -574,22 +581,22 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
     from scipy.spatial import cKDTree
 
     if int(min_points) < 2:
-        raise ValueError('A minimális pontszám legalább 2 legyen.')
+        raise ValueError('Minimum point count must be at least 2.')
     min_points = int(min_points)
     folder = Path(folder)
     files = sorted(folder.glob('*.csv'))
     if not files:
-        raise ValueError('Nincs CSV-fájl a kiválasztott könyvtárban.')
-    output = folder / 'Eredmenyek' / 'All_Variables'
+        raise ValueError('No CSV files found in the selected folder.')
+    output = folder / 'Results' / 'All_Variables'
     output.mkdir(parents=True, exist_ok=True)
     observations, file_errors = [], []
     required = {'RA', 'DEC', 'Is Variable', 'Mag(obs)', 'Mag(err)', 'EXP start(JD)'}
-    print(f'All Variables: {len(files)} CSV fájl, almappák nélkül.')
+    print(f'All Variables: {len(files)} CSV files, no subfolders.')
     for i, file in enumerate(files, 1):
         try:
             table = pd.read_csv(file, usecols=lambda c: c in required or c == 'SNR', low_memory=False)
             if not required.issubset(table.columns):
-                file_errors.append(f'{file.name}: hiányzó oszlopok')
+                file_errors.append(f'{file.name}: missing columns')
                 continue
             sel = table['Is Variable'].astype(str).str.strip().str.lower().isin(['true', '1', 'yes'])
             part = table.loc[sel].copy()
@@ -603,11 +610,11 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
         except Exception as exc:
             file_errors.append(f'{file.name}: {exc}')
         if i % 250 == 0:
-            print(f'Beolvasva: {i}/{len(files)} fájl')
+            print(f'Read: {i}/{len(files)} fájl')
     if not observations or not any(len(d) for d in observations):
-        raise RuntimeError('Az Is Variable=True jelölésű csillagokhoz nem találtam méréseket.')
+        raise RuntimeError('No measurements for stars marked Is Variable=True.')
     df = pd.concat(observations, ignore_index=True)
-    print(f'Változójelölésű sorok: {len(df)}, hibás fájlok: {len(file_errors)}')
+    print(f'Variable-marked rows: {len(df)}, invalid files: {len(file_errors)}')
 
     ra = np.deg2rad(df.RA.to_numpy(float))
     dec = np.deg2rad(df.DEC.to_numpy(float))
@@ -635,7 +642,7 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
         root=find(i)
         groups.setdefault(root, []).append(i)
     groups = sorted(groups.values(), key=len, reverse=True)
-    print(f'Koordináta szerint különböző jelöltek: {len(groups)}')
+    print(f'Distinct coordinate-based candidates: {len(groups)}')
 
     # The VSX api.list radius parameter is in DEGREES, not arcseconds.
     # Grouping (match_arcsec) and catalog identification (vsx_radius_arcsec)
@@ -668,7 +675,9 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
                     name = str(item.get('Name', '')).strip()
                     if name:
                         period = item.get('Period', '')
-                        vartype = item.get('Type', '')
+                        # VSX API uses 'VariabilityType', not usually 'Type'.
+                        vartype = next((str(item[k]).strip() for k in ('VariabilityType', 'Type')
+                                        if item.get(k) is not None and str(item[k]).strip()), '')
                         matches.append(dict(sep=separation, name=name, ra=vra,
                                             dec=vdec, period=period, vartype=vartype))
             except (ValueError, TypeError):
@@ -695,7 +704,7 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
             body = response.read().decode('utf-8-sig')
         return parse_vsx(body, ra0, dec0)
 
-    print(f'VSX koordináta-keresés: {vsx_radius_arcsec:g}″; csillagcsoportosítás: {match_arcsec:g}″')
+    print(f'VSX coordinate search: {vsx_radius_arcsec:g}″; star grouping: {match_arcsec:g}″')
     vsx_available = True
     vsx_matched = vsx_missing = vsx_ambiguous = 0
 
@@ -742,13 +751,13 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
                 elif len(matches) > 1:
                     vsx_ambiguous += 1
                     vsx_status = 'ambiguous'
-                    print(f'VSX több találat ({fallback}): ' + ', '.join(x['name'] for x in matches[:6]) + '; koordinátanév marad.')
+                    print(f'Multiple VSX matches ({fallback}): ' + ', '.join(x['name'] for x in matches[:6]) + '; keeping coordinate identifier.')
                 else:
                     vsx_missing += 1
-                    print(f'VSX nincs találat: {fallback}')
+                    print(f'No VSX match: {fallback}')
             except Exception as exc:
-                print(f'VSX lekérdezés sikertelen ({fallback}): {type(exc).__name__}: {str(exc)[:160]}')
-                print('A következő csillagok koordinátanévvel készülnek. Ellenőrizd az internetkapcsolatot és a VSX API-t.')
+                print(f'VSX query failed ({fallback}): {type(exc).__name__}: {str(exc)[:160]}')
+                print('Subsequent stars use coordinate IDs. Check internet access and the VSX API.')
                 vsx_available = False
                 vsx_status = 'query_failed'
         err = pd.to_numeric(d.mag_err, errors='coerce').to_numpy(float)
@@ -773,7 +782,7 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
         good = d[d['valid'] & ~d['spike_rejected']]
         if len(good) < min_points:
             skipped += 1
-            print(f'{name}: {len(good)} tisztított pont < {min_points}, kihagyva.')
+            print(f'{name}: {len(good)} tisztított points < {min_points}, skipped.')
             continue
         coord_ra, coord_dec = (vsx_obj['ra'], vsx_obj['dec']) if vsx_obj else (cra, cdec)
         ra_text, dec_text = format_coords(coord_ra, coord_dec)
@@ -786,7 +795,7 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
         vartype = vsx_obj.get('vartype') if vsx_obj else None
         object_info = {'Name': name, 'RA (J2000)': ra_text, 'Dec (J2000)': dec_text,
                        'Period': period_text, 'Type': vartype or '--'}
-        output_plots(d, {'NAME': clean_name, 'SITE': 'Esztergom, HU',
+        output_plots(d, {'NAME': clean_name, 'SITE': site_name,
                          'OBJECT_INFO': object_info}, output, time_only=True,
                      show_median=show_median)
         made += 1
@@ -813,9 +822,9 @@ def all_variables(folder, match_arcsec=2.0, vsx_radius_arcsec=5.0,
                'Median_mag','Median_error_mag','Median_SNR','Plot_file']
     summary_path = output / 'All_Variables_summary.csv'
     pd.DataFrame(summary, columns=columns).to_csv(summary_path, index=False, encoding='utf-8-sig')
-    print(f'Összesítés: {summary_path}; minimum: {min_points} pont; kihagyva: {skipped}')
-    print(f'VSX: azonosított={vsx_matched}, nincs találat={vsx_missing}, több találat={vsx_ambiguous}.')
-    print(f'Elkészült time-görbék: {made}. Mappa: {output}')
+    print(f'Summary: {summary_path}; minimum: {min_points} pont; skipped: {skipped}')
+    print(f'VSX: matched={vsx_matched}, not_found={vsx_missing}, ambiguous={vsx_ambiguous}.')
+    print(f'Time plots generated: {made}. Folder: {output}')
     if file_errors:
-        print('Első beolvasási hibák:', *file_errors[:10], sep='\n  ')
+        print('First read errors:', *file_errors[:10], sep='\n  ')
     return made
