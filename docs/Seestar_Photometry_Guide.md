@@ -318,7 +318,7 @@ The program will save its results automatically in the Results folder.
 
 **Download Seestar Photometry:**
 
-(https://github.com/szamosphoto-maker/Seestar-photometry/releases?utm_source=chatgpt.com)
+[https://github.com/szamosphoto-maker/Seestar-photometry/releases?utm_source=chatgpt.com]
 
 An English README user guide is included with the software.
 
