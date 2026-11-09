@@ -126,7 +126,7 @@ The **Variable Card Manager** allows users to create, inspect, and save these ca
 
 There is no need to edit text files manually.
 
-**[Figure 2 – Variable Card Manager]**
+![Variable Card Manager](<Képernyőfelvétel (438).png>)
 
 *Figure 2. The Variable Card Manager displaying the saved parameters of SW Lac. Catalogue information can be retrieved through VSX and Gaia queries, while the reference epoch must be verified by the observer.*
 
@@ -166,7 +166,7 @@ The observer's location is therefore configurable.
 
 In the Observatory Settings window, users can specify their observatory name, geographical latitude, longitude, and elevation above sea level.
 
-**[Figure 3 – Observatory Settings]**
+![Observatory Settings](<Képernyőfelvétel (439).png>)
 
 *Figure 3. The Observatory Settings window. Geographical coordinates are saved locally and used when calculating heliocentric observation times.*
 
@@ -182,7 +182,7 @@ The application reads the input measurements, matches the selected star, checks 
 
 The processing log provides information about the number of CSV files, matched observations, accepted measurements, rejected spikes, and potential errors.
 
-**[Figure 4 – Processing log]**
+![Processing log](<Képernyőfelvétel (440).png>)
 
 *Figure 4. Processing log from an SW Lac observing session. All 1,748 measurements were matched and accepted, with no rejected spikes.*
 
@@ -198,7 +198,7 @@ All processed results are saved automatically in a folder named **Results**, cre
 
 For Target Star processing, the output includes the three light-curve images, measurement tables, cleaned data, rejected-spike information, and a quality report.
 
-**[Figure 5 – Results folder]**
+![Results folder](<Képernyőfelvétel (441).png>)
 
 *Figure 5. Output files produced by Target Star processing, including Phase, Time, and Raw light curves, measurement CSV files, and the quality report.*
 
@@ -234,7 +234,7 @@ Some were identified by their familiar variable-star names, while others retaine
 
 This illustrates how much additional information can be recovered from a field initially observed for just one target.
 
-**[Figure 6 – All Variables results]**
+![All Variables results](<Képernyőfelvétel (442).png>)
 
 *Figure 6. The All_Variables output folder containing 13 individual Time Curves and a summary CSV file. The plots include catalogue-identified variables and objects retained under Gaia identifiers.*
 
@@ -254,7 +254,7 @@ I therefore collected observations over four nights and combined them using Sees
 
 The resulting phase-folded light curve shows a well-defined primary eclipse, together with other portions of the orbital brightness variation.
 
-**[Figure 7 – PV Cas Phase Curve]**
+![PV Cas phase curve](PV_Cas_phase_lightcurve.png)
 
 *Figure 7. Phase-folded light curve of PV Cas obtained with the Seestar S50. Measurements from four observing nights were combined using a period of approximately 1.75047 days. Point colours indicate the estimated magnitude errors, while rejected spikes are displayed in grey.*
 
@@ -272,7 +272,7 @@ The dataset contained 1,748 accepted photometric measurements.
 
 The resulting Time Curve clearly displays the changing brightness of the system, including two eclipses of different depths.
 
-**[Figure 8 – SW Lac Time Curve]**
+![SW Lac time curve](SW_Lac_time_lightcurve.png)
 
 *Figure 8. Time-series light curve of SW Lac observed on October 18, 2026. The 5.51-hour session produced 1,748 accepted measurements. Blue points represent the measurements, and the orange line shows the optional running median.*
 
