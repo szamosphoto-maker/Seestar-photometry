@@ -64,7 +64,7 @@ The interface offers two analysis modes:
 
 The program also includes tools for managing variable star information and defining the observer's geographical location.
 
-![Photometry main window](Képernyőfelvétel (437).png)
+![Photometry main window](<Képernyőfelvétel (437).png>)
 
 *Figure 1. The Seestar Photometry main window. Users can select the CSV source folder, choose between Target Star and All Variables processing, and access the Variable Card Manager and Observatory Settings.*
 
