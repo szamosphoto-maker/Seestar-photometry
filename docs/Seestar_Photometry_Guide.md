@@ -103,7 +103,7 @@ The Phase Curve combines observations according to the variable star's period an
 The phase is calculated using:
 
 $$
-\phi=\operatorname{frac}\left(\frac{HJD-T_0}{P}\right)
+\phi = \left(\frac{\mathrm{HJD}-T_0}{P}\right)\bmod 1
 $$
 
 where HJD is the heliocentric Julian Date, T0 is the reference epoch, and P is the period in days.
